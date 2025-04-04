@@ -11,11 +11,27 @@ void    print_error(char *str)
         write(2, str++, 1);
 }
 
+int count_args(char **argv, int i)
+{
+    int count;
+
+    count = 0;
+    while (argv[i] && strcmp(argv[i], ";") != 0 && strcmp(argv[i], "|") != 0)
+    {
+        i++;
+        count++;
+    }
+    return (count);
+}
+
 int main(int argc, char **argv, char **env)
 {
+    int i;
+    int number_args;
+
     if (argc == 1)
         return (0);
-    int i = 1;
+    i = 1;
     while (argv[i])
     {
         if (strcmp(argv[i], ";") == 0 || strcmp(argv[i], "|") == 0)
@@ -23,9 +39,23 @@ int main(int argc, char **argv, char **env)
             i++;
             continue ;
         }
+        number_args = count_args(argv, i);
         if (strcmp(argv[i], "cd") == 0)
         {
-            i += 2;
+            if (number_args == 2)
+            {
+                if (chdir(argv[i + 1]))
+                {
+                    print_error("error: cd: cannot change directory to ");
+                    print_error(argv[i + 1]);
+                    print_error("\n");
+                }
+            }
+            else
+            {
+                print_error("error: cd: bad arguments\n");
+            }
+            i += number_args;
             continue;
         }
         pid_t   pid = fork();
@@ -37,11 +67,16 @@ int main(int argc, char **argv, char **env)
             print_error("\n");
             exit(1);
         }
-        else
+        else if (pid > 0)
         {
             waitpid(pid, NULL, 0);
         }
-        i++;
+        else
+        {
+            print_error("error: fatal\n");
+            exit (1);
+        }
+        i += number_args;
     }
     return (0);
 }
