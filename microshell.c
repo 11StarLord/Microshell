@@ -1,131 +1,84 @@
-#include <unistd.h>
+#include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/wait.h>
-#include <errno.h>
+#include <unistd.h>
 #include <stdio.h>
 
-void    print_error(char *str)
+int print_message(char *str, char *command)
 {
     while (*str)
         write(2, str++, 1);
+    if (command)
+    {
+        while (*command)
+            write(2, command++, 1);
+    }
+    return (write(2, "\n", 1));
 }
 
-void    execute_pipeline(char **argv, int start, int end, char **env, int *prev_pipe)
+int function_cd(char **argv, int args)
 {
-    int pipe_fd[2]; //Array para armazenar os descritores do pipe (leitura em pipe_fd[0], escrita em pipe_fd[1])
+    if (args != 2)
+        return (print_message("error: cd: bad arguments", NULL));
+    if (chdir(argv[1]) < 0)
+        return (print_message("error: cd: cannot change directory to ", argv[1]));
+    return (0);
+}
 
-    if (argv[end] && strcmp(argv[end], "|") == 0) //Se o próximo token é |, cria um pipe com pipe(pipe_fd). Se falhar, imprime erro e sai
+void    function_pipe(bool has_pipe, int *fd, int end)
+{
+    if (has_pipe == true)
     {
-        if (pipe(pipe_fd) == -1)
-        {
-            print_error("error : fatal\n");
-            exit(1);
-        }
+        if (dup2(fd[end], end) == -1 || close(fd[0]) == -1 || close(fd[1]) == -1)
+            exit(print_message("error: fatal", NULL));
     }
-    pid_t   pid = fork(); //divide o processo em pai e filho. Se falhar (pid == -1), imprime erro e encerra.
+}
+
+int function_execute(char **argv, int i, char **env)
+{
+    int pid;
+    int status;
+    int fd[2];
+    bool    has_pipe;
+
+    has_pipe = (argv[i] && strcmp(argv[i], "|") == 0);
+    if (has_pipe == false && strcmp(argv[0], "cd") == 0)
+        return (function_cd(argv, i));
+    if (has_pipe == true && pipe(fd) == -1)
+        exit(print_message("error: fatal", NULL));
+    pid = fork();
     if (pid == -1)
-    {
-        print_error("error : fatal\n");
-        exit(1);
-    }
+        exit(print_message("error: fatal", NULL));
     if (pid == 0)
     {
-        if (prev_pipe[0] != -1) //Se houver um pipe anterior
-        {
-            dup2(prev_pipe[0], STDIN_FILENO); //Conecta a saída do comando anterior à entrada do atual.
-            close(prev_pipe[0]); //Fecha os descritores do pipe anterior para evitar vazamentos
-            close(prev_pipe[1]);
-        }
-        if (argv[end] && strcmp(argv[end], "|") == 0) //Se houver um pipe após o comando (argv[end] == "|"
-        {
-            dup2(pipe_fd[1], STDOUT_FILENO); //Conecta a saída do comando atual ao próximo.
-            close(pipe_fd[0]); //Fecha os descritores do pipe anterior para evitar vazamentos
-            close(pipe_fd[1]);
-        }
-        argv[end] = NULL; //Marca o fim do comando atual em argv (exigido por execve)
-        execve(argv[start], &argv[start], env); //Substitui o processo filho pelo comando
-        print_error("error : cannot execute "); //Se execve falhar, imprime erro e encerra o filho
-        print_error(argv[start]);
-        print_error("\n");
-        exit(1);
+        argv[i] = NULL;
+        function_pipe(has_pipe, fd, 1);
+        execve(argv[0], argv, env);
+        exit(print_message("error: cannot execute ", argv[0]));
     }
-    else
-    {
-        if (prev_pipe[0] != -1) //Se houver um pipe anterior
-        {
-            close(prev_pipe[0]); //Fecha descritores do pipe anterior (se existirem)
-            close(prev_pipe[1]);
-        }
-        if (argv[end] && strcmp(argv[end], "|") == 0) //Se houver um próximo comando (|), armazena os descritores do novo pipe em prev_pipe
-        {
-            prev_pipe[0] = pipe_fd[0];
-            prev_pipe[1] = pipe_fd[1];
-        }
-        else
-        {
-            waitpid(pid, NULL, 0); //Caso contrário, espera o filho terminar (waitpid)
-        }
-    }
+    waitpid(pid, &status, 0);
+    function_pipe(has_pipe, fd, 0);
+    return (WIFEXITED(status) && WEXITSTATUS(status));
 }
 
 int main(int argc, char **argv, char **env)
 {
     int i;
-    int start;
+    int status;
 
-    if (argc == 1)
+    i = 0;
+    status = 0;
+    if (argc < 2)
         return (0);
-    int prev_pipe[2] = {-1 , -1};
-    i = 1;
     while (argv[i])
-    {
-        if (strcmp(argv[i], ";") == 0 || strcmp(argv[i], "|") == 0)
-        {
+    {  
+        argv += i + 1;
+        i = 0;
+        while (argv[i] && strcmp(argv[i], "|") != 0 && strcmp(argv[i], ";") != 0)
             i++;
-            continue ;
-        }
-        start = i;
-        while (argv[i] && strcmp(argv[i], ";") != 0 && strcmp(argv[i], "|") != 0)
-            i++;
-        if (strcmp(argv[i], "cd") == 0)
-        {
-            if ( i - start == 2)
-            {
-                if (chdir(argv[i + 1]))
-                {
-                    print_error("error: cd: cannot change directory to ");
-                    print_error(argv[i + 1]);
-                    print_error("\n");
-                }
-            }
-            else
-            {
-                print_error("error: cd: bad arguments\n");
-            }
-        }
-        else
-        {
-            execute_pipeline(argv, start, i, env, prev_pipe);
-        }
-        pid_t   pid = fork();
-        if (pid == 0)
-        {
-            execve(argv[i], &argv[i], env);
-            print_error("error: cannot execute ");
-            print_error(argv[i]);
-            print_error("\n");
-            exit(1);
-        }
-        else if (pid > 0)
-        {
-            waitpid(pid, NULL, 0);
-        }
-        else
-        {
-            print_error("error: fatal\n");
-            exit (1);
-        }
+        if (i != 0)
+            status = function_execute(argv, i, env);
     }
-    return (0);
+    return (status);
 }
